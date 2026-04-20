@@ -2,10 +2,6 @@
 
 Notable user-visible changes. Follows [semver](https://semver.org).
 
-## Unreleased
-
-First full pass at the CLI. Not yet tagged.
-
 ### Added
 
 - `aland login` / `logout` / `whoami` — PKCE loopback OAuth against the
