@@ -1,0 +1,116 @@
+# goreleaser config for the aland CLI.
+#
+# Triggered by pushing a tag like `v0.1.0`. CI runs `goreleaser release`,
+# which:
+#   1. Cross-compiles the binary for darwin (amd64+arm64), linux (amd64+arm64),
+#      and windows (amd64).
+#   2. Packages each as a .tar.gz (or .zip for windows) with LICENSE + README.
+#   3. Uploads artifacts + checksums to a GitHub Release matching the tag.
+#   4. Commits a formula update to the homebrew-tap repo so
+#      `brew install artifactland/tap/aland` picks it up.
+#
+# See https://goreleaser.com/customization/ for full reference.
+version: 2
+
+project_name: aland
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: aland
+    main: ./cmd/aland
+    binary: aland
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # Windows/arm64 builds exist but we're not supporting them in v1.
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Date={{.Date}}
+
+archives:
+  - id: aland
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE*
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+# SLSA-style provenance: goreleaser signs the checksums file with cosign.
+# Cosign keys live in GitHub secrets; skipped if not configured.
+signs:
+  - cmd: cosign
+    env:
+      - COSIGN_EXPERIMENTAL=1
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+    output: true
+
+release:
+  github:
+    owner: artifactland
+    name: aland
+  prerelease: auto
+  name_template: "aland {{ .Version }}"
+  header: |
+    ## aland CLI {{ .Version }}
+
+    Install with Homebrew:
+    ```sh
+    brew install artifactland/tap/aland
+    ```
+
+    Or download a binary below. Verify the checksum against `checksums.txt`.
+
+brews:
+  - name: aland
+    repository:
+      owner: artifactland
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://artifact.land
+    description: Publish and fork artifacts from the terminal
+    license: MIT
+    test: |
+      system "#{bin}/aland", "version"
+    install: |
+      bin.install "aland"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
