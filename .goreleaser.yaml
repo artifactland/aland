@@ -93,19 +93,16 @@ release:
 
     Or download a binary below. Verify the checksum against `checksums.txt`.
 
-brews:
+homebrew_casks:
   - name: aland
+    binaries:
+      - aland
     repository:
       owner: artifactland
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://artifact.land
     description: Publish and fork artifacts from the terminal
-    license: MIT
-    test: |
-      system "#{bin}/aland", "version"
-    install: |
-      bin.install "aland"
 
 changelog:
   sort: asc
