@@ -93,16 +93,25 @@ release:
 
     Or download a binary below. Verify the checksum against `checksums.txt`.
 
-homebrew_casks:
+# Formula, not cask. Casks apply the macOS quarantine attribute to the
+# installed binary; without Apple notarization that trips Gatekeeper on
+# first run. Formulas strip the quarantine attr on install, so until we
+# set up Developer ID signing + notarytool (see docs/notarization-setup.md
+# in the artifact-land monorepo), this is the shape that gives users a
+# first-run-just-works Homebrew experience.
+brews:
   - name: aland
-    binaries:
-      - aland
     repository:
       owner: artifactland
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: https://artifact.land
     description: Publish and fork artifacts from the terminal
+    license: MIT
+    test: |
+      system "#{bin}/aland", "version"
+    install: |
+      bin.install "aland"
 
 changelog:
   sort: asc
