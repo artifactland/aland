@@ -23,7 +23,7 @@ const productionCSP = "default-src 'self' https://cdnjs.cloudflare.com https://c
 	"img-src 'self' data: blob:; " +
 	"connect-src 'none'; " +
 	"font-src 'self' data: https://fonts.gstatic.com; " +
-	"frame-src 'none'; " +
+	"frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com; " +
 	"object-src 'none'; " +
 	"base-uri 'none'"
 

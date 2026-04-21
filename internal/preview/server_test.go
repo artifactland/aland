@@ -54,6 +54,10 @@ func TestServerServesHTMLWithSandboxHeaders(t *testing.T) {
 	if !strings.Contains(csp, "connect-src 'none'") {
 		t.Errorf("CSP missing `connect-src 'none'`: %s", csp)
 	}
+	// frame-src allowlist mirrors prod — YouTube and Vimeo embeds must load.
+	if !strings.Contains(csp, "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com") {
+		t.Errorf("CSP missing YouTube/Vimeo frame-src allowlist: %s", csp)
+	}
 }
 
 func TestServerRejectsJSXWithHelpfulError(t *testing.T) {
