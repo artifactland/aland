@@ -166,30 +166,24 @@ func TestLoopbackCORSHeadersOnCallback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var respHeaders http.Header
-	go func() {
-		time.Sleep(20 * time.Millisecond)
-		resp, err := http.Get(server.RedirectURI() + "?code=tok&state=cors-state")
-		if err != nil {
-			t.Errorf("callback GET: %v", err)
-			return
-		}
-		defer resp.Body.Close()
-		respHeaders = resp.Header
-	}()
+	time.Sleep(20 * time.Millisecond)
+	resp, err := http.Get(server.RedirectURI() + "?code=tok&state=cors-state")
+	if err != nil {
+		t.Fatalf("callback GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Errorf("Access-Control-Allow-Private-Network = %q, want true", got)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-
 	if _, err := server.Await(ctx); err != nil {
 		t.Fatalf("Await: %v", err)
-	}
-	time.Sleep(20 * time.Millisecond) // let goroutine capture headers
-	if got := respHeaders.Get("Access-Control-Allow-Origin"); got != "*" {
-		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
-	}
-	if got := respHeaders.Get("Access-Control-Allow-Private-Network"); got != "true" {
-		t.Errorf("Access-Control-Allow-Private-Network = %q, want true", got)
 	}
 }
 
