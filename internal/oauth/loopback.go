@@ -95,6 +95,20 @@ func (s *LoopbackServer) shutdown() {
 }
 
 func (s *LoopbackServer) handleCallback(w http.ResponseWriter, r *http.Request) {
+	// Some authorization pages (e.g. Rails apps using Turbo) submit the
+	// authorize form via fetch rather than a full browser navigation.  Chrome
+	// then applies its Private Network Access (PNA) policy and sends an OPTIONS
+	// preflight before allowing a cross-origin fetch to a loopback address.
+	// Respond with the required headers on every response so both the preflight
+	// and the real GET succeed without needing a full-page redirect.
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Private-Network", "true")
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	q := r.URL.Query()
 
 	if e := q.Get("error"); e != "" {

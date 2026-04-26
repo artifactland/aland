@@ -128,6 +128,71 @@ func TestLoopbackFailurePageEscapesHTML(t *testing.T) {
 	}
 }
 
+func TestLoopbackPrivateNetworkPreflight(t *testing.T) {
+	server, err := StartLoopback("s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_, _ = server.Await(ctx)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	req, _ := http.NewRequest(http.MethodOptions, server.RedirectURI(), nil)
+	req.Header.Set("Origin", "https://artifact.land")
+	req.Header.Set("Access-Control-Request-Private-Network", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("OPTIONS preflight: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Errorf("Access-Control-Allow-Private-Network = %q, want true", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+}
+
+func TestLoopbackCORSHeadersOnCallback(t *testing.T) {
+	server, err := StartLoopback("cors-state")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var respHeaders http.Header
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		resp, err := http.Get(server.RedirectURI() + "?code=tok&state=cors-state")
+		if err != nil {
+			t.Errorf("callback GET: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		respHeaders = resp.Header
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := server.Await(ctx); err != nil {
+		t.Fatalf("Await: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond) // let goroutine capture headers
+	if got := respHeaders.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want *", got)
+	}
+	if got := respHeaders.Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Errorf("Access-Control-Allow-Private-Network = %q, want true", got)
+	}
+}
+
 func TestLoopbackTimesOut(t *testing.T) {
 	server, err := StartLoopback("s")
 	if err != nil {
