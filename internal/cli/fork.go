@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -168,9 +169,14 @@ const refreshTimeout = 15 * time.Second
 // If the stored access token is expired (or within refreshLeeway of it) and
 // a refresh token is present, authedClient silently exchanges the refresh
 // token for a new pair before returning. The rotated tokens are persisted
-// so subsequent commands don't each re-refresh. Refresh failures are
-// swallowed intentionally — the stale access token is returned and the
-// server will 401 with a clear message if it really is dead.
+// so subsequent commands don't each re-refresh.
+//
+// If the refresh attempt comes back with a hard OAuth error (invalid_grant,
+// invalid_token — the refresh token is dead) we surface api.ErrUnauthenticated
+// immediately so the user sees the "run aland login" message without first
+// burning a request that will 401. Soft errors (network blips) fall through
+// with the stale access token; if it really is dead, api.Client converts the
+// resulting 401 to the same sentinel.
 func authedClient(globals *GlobalFlags) (*api.Client, *config.Profile, error) {
 	profileName := globals.Profile
 	if profileName == "" {
@@ -182,7 +188,7 @@ func authedClient(globals *GlobalFlags) (*api.Client, *config.Profile, error) {
 	}
 	profile := creds.GetProfile(profileName)
 	if profile == nil {
-		return nil, nil, fmt.Errorf("not signed in on profile %q (run `aland login` first)", profileName)
+		return nil, nil, api.ErrUnauthenticated
 	}
 	apiBase, err := effectiveAPIBase(profile.APIBase, globals.APIBase)
 	if err != nil {
@@ -190,18 +196,38 @@ func authedClient(globals *GlobalFlags) (*api.Client, *config.Profile, error) {
 	}
 
 	if profile.RefreshToken != "" && tokenNeedsRefresh(profile) {
-		if refreshed, rerr := refreshProfile(apiBase, profile); rerr == nil {
-			if serr := config.SetProfile(profileName, refreshed); serr == nil {
-				profile = refreshed
-			} else {
+		refreshed, rerr := refreshProfile(apiBase, profile)
+		switch {
+		case rerr == nil:
+			if serr := config.SetProfile(profileName, refreshed); serr != nil {
 				// Couldn't persist — still use the fresh in-memory tokens
 				// for this command. Next command will try to refresh again.
-				profile = refreshed
 			}
+			profile = refreshed
+		case isHardOAuthError(rerr):
+			return nil, nil, api.ErrUnauthenticated
+		default:
+			// Soft failure — keep the (possibly stale) token; api.Client will
+			// convert any resulting 401 to api.ErrUnauthenticated itself.
 		}
 	}
 
 	return &api.Client{APIBase: apiBase, Token: profile.AccessToken}, profile, nil
+}
+
+// isHardOAuthError reports whether an oauth.Refresh error indicates the
+// refresh token itself is dead (revoked, expired, or otherwise unusable),
+// vs. a transient/network problem.
+func isHardOAuthError(err error) bool {
+	var te *oauth.TokenError
+	if !errors.As(err, &te) {
+		return false
+	}
+	switch te.ErrorCode {
+	case "invalid_grant", "invalid_token", "unauthorized_client", "invalid_client":
+		return true
+	}
+	return false
 }
 
 // tokenNeedsRefresh returns true when the access token is past expiry or

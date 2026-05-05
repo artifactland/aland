@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/artifactland/aland/internal/api"
 	"github.com/artifactland/aland/internal/config"
 )
 
@@ -91,11 +93,12 @@ func TestAuthedClientRefreshesExpiredToken(t *testing.T) {
 	}
 }
 
-// TestAuthedClientFallsBackOnRefreshFailure ensures a 400/401 from the token
-// endpoint doesn't turn into a CLI crash — the user should see their command
-// proceed with the stale token (and get a clean 401 from the API if it's
-// really dead), not a refresh-layer error.
-func TestAuthedClientFallsBackOnRefreshFailure(t *testing.T) {
+// TestAuthedClientReturnsErrUnauthenticatedOnDeadRefresh ensures a hard
+// OAuth error from the token endpoint (invalid_grant — refresh token is
+// revoked or expired) short-circuits authedClient with the typed
+// ErrUnauthenticated sentinel rather than letting a stale access token
+// proceed to the API and trigger a confusing downstream 401.
+func TestAuthedClientReturnsErrUnauthenticatedOnDeadRefresh(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -113,15 +116,41 @@ func TestAuthedClientFallsBackOnRefreshFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	client, profile, err := authedClient(&GlobalFlags{})
+	_, _, err := authedClient(&GlobalFlags{})
+	if err == nil {
+		t.Fatal("expected ErrUnauthenticated, got nil")
+	}
+	if !errors.Is(err, api.ErrUnauthenticated) {
+		t.Errorf("expected api.ErrUnauthenticated, got: %v", err)
+	}
+}
+
+// TestAuthedClientPassesThroughOnSoftRefreshFailure: when the token
+// endpoint is unreachable (network blip, 5xx), we don't want to lock the
+// user out — keep the stale access token and let api.Client surface the
+// downstream 401 if it really is dead. Only HARD OAuth errors short-circuit.
+func TestAuthedClientPassesThroughOnSoftRefreshFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	withTempConfigDir(t)
+	if err := config.SetProfile(config.DefaultProfile, &config.Profile{
+		APIBase:      srv.URL,
+		AccessToken:  "stale-access",
+		RefreshToken: "still-good",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	client, _, err := authedClient(&GlobalFlags{})
 	if err != nil {
-		t.Fatalf("authedClient should not error on refresh failure: %v", err)
+		t.Fatalf("soft refresh failure should not block authedClient: %v", err)
 	}
 	if client.Token != "stale-access" {
-		t.Errorf("on refresh failure, token should stay stale; got %q", client.Token)
-	}
-	if profile.AccessToken != "stale-access" {
-		t.Errorf("profile.AccessToken = %q, want stale-access", profile.AccessToken)
+		t.Errorf("soft failure should keep the stale token; got %q", client.Token)
 	}
 }
 

@@ -7,12 +7,20 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+// ErrUnauthenticated is returned when the API rejects the request because
+// the bearer token is missing, expired, or revoked. Callers should let this
+// bubble up to the user — its Error() text names the recovery action so the
+// user (or an agent driving the CLI) knows what to do without context from
+// the calling command.
+var ErrUnauthenticated = errors.New("your authentication has expired or was revoked. Run `aland login` to re-authenticate (in another terminal if you're inside an agent session)")
 
 // Client holds the API base + bearer token. Zero value isn't useful; call
 // New() or construct directly.
@@ -228,6 +236,13 @@ func (c *Client) doJSON(ctx context.Context, method, path string, body, out any)
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return fmt.Errorf("reading %s response: %w", path, err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Doorkeeper returns OAuth-shaped errors here ({error, error_description})
+		// rather than the API envelope, so don't try to unwrap. The sentinel's
+		// own message tells the user what to do.
+		return ErrUnauthenticated
 	}
 
 	if resp.StatusCode/100 != 2 {

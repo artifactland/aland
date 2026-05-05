@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,11 +33,35 @@ func TestMeReturnsUser(t *testing.T) {
 	}
 }
 
-func TestMeReturnsEnvelopeError(t *testing.T) {
+// 401 from any endpoint converts to ErrUnauthenticated regardless of the
+// body shape (Doorkeeper sends OAuth-style errors, not the API envelope).
+// The sentinel's Error() text guides the user to `aland login`.
+func TestMeReturns401AsErrUnauthenticated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":{"code":"unauthorized","message":"bad token"},"meta":{"request_id":"req_X"}}`))
+		_, _ = w.Write([]byte(`{"error":"invalid_token","error_description":"token revoked"}`))
+	}))
+	defer srv.Close()
+
+	c := &Client{APIBase: srv.URL, Token: "tok"}
+	_, err := c.Me(context.Background())
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrUnauthenticated) {
+		t.Errorf("expected ErrUnauthenticated, got %T: %v", err, err)
+	}
+}
+
+// 422 (and other non-401 envelope errors) still surface as a typed *Err so
+// callers can pattern-match on Code (e.g. visibility_downgrade_blocked,
+// unknown_library).
+func TestNon401EnvelopeErrorsStillTyped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error":{"code":"unknown_library","message":"x"},"meta":{"request_id":"r"}}`))
 	}))
 	defer srv.Close()
 
@@ -49,7 +74,7 @@ func TestMeReturnsEnvelopeError(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *Err, got %T: %v", err, err)
 	}
-	if e.Code != "unauthorized" {
-		t.Errorf("code = %q, want unauthorized", e.Code)
+	if e.Code != "unknown_library" {
+		t.Errorf("code = %q, want unknown_library", e.Code)
 	}
 }
