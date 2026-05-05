@@ -2,6 +2,37 @@
 
 Notable user-visible changes. Follows [semver](https://semver.org).
 
+## v0.1.2 — 2026-05-05
+
+### Fixed
+
+- `.aland.json` no longer stamps a default `visibility: public_visibility`
+  on `aland init` and on the auto-bootstrap path of `aland push <file>`.
+  That stale value used to ride along on every subsequent update and
+  silently revert a post to Public after the user had bumped it to
+  Private via the web. The field is now omitted; the server picks the
+  default on create and preserves whatever the post currently has on
+  every update.
+- `aland login` is now self-healing on an existing profile:
+  - **Fresh token** → no-op, prints a friendly "Already signed in as @…"
+  - **Expired but refreshable** → silent refresh + persist new pair
+  - **Refresh token also dead** → falls through to the full PKCE browser
+    flow, no `aland logout` required first
+  - `--force` still skips all shortcuts and runs full PKCE
+- 401 from any API call now surfaces as a single, actionable message
+  pointing at `aland login` — including a "in another terminal if you're
+  inside an agent session" hint so a Claude Code (or other agent) caller
+  knows to ask the user to re-auth without trying it itself.
+- A hard OAuth error during silent token refresh (`invalid_grant`,
+  `invalid_token`) short-circuits with the same clear message instead of
+  letting a known-dead access token go to the API and cause a confusing
+  downstream 401.
+- Surface the new server-side `visibility_downgrade_blocked` error from
+  `aland push` with a message that points at the likely cause (stale
+  `.aland.json`) and the fix.
+
+## v0.1.0
+
 ### Added
 
 - `aland login` / `logout` / `whoami` — PKCE loopback OAuth against the
