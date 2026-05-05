@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/artifactland/aland/internal/api"
 	"github.com/artifactland/aland/internal/config"
 	"github.com/artifactland/aland/internal/project"
 )
@@ -261,6 +262,30 @@ func TestPublishBootstrapsProjectOnFirstRun(t *testing.T) {
 	// Title should have been sent to the server as part of the metadata.
 	if !strings.Contains(receivedBody, `"title":"Light Cones"`) {
 		t.Errorf("inferred title not included in publish body: %s", receivedBody)
+	}
+
+	// Bootstrap must NOT stamp a default visibility into the project file —
+	// otherwise a follow-up push after a web-side privacy bump would silently
+	// re-leak the post.
+	if a.Visibility != "" {
+		t.Errorf("bootstrap wrote visibility=%q; expected empty so the server picks the default and updates preserve any web-side change", a.Visibility)
+	}
+	if strings.Contains(receivedBody, `"visibility"`) {
+		t.Errorf("create body should omit visibility when none is set in .aland.json; got: %s", receivedBody)
+	}
+}
+
+func TestFormatPushErrorVisibilityDowngrade(t *testing.T) {
+	apiErr := &api.Err{
+		Code:    "visibility_downgrade_blocked",
+		Message: "This post is currently private_visibility; pass confirm_visibility_change=true to change it to public_visibility.",
+		Details: map[string]any{"from": "private_visibility", "to": "public_visibility"},
+	}
+	got := formatPushError(apiErr).Error()
+	for _, want := range []string{"Private", "Public", "stale", ".aland.json"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("formatted error missing %q; got: %s", want, got)
+		}
 	}
 }
 

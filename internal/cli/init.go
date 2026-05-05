@@ -71,7 +71,6 @@ func runInit(cmd *cobra.Command, args []string, jsx, force bool) error {
 	p := project.New(dir)
 	if err := p.Add(project.DefaultArtifactName, &project.Artifact{
 		SourceFile: sourceFile,
-		Visibility: "public_visibility",
 	}); err != nil {
 		return err
 	}

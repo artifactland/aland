@@ -212,8 +212,36 @@ func formatPushError(err error) error {
 		return ui.Errorf("%s", apiErr.Message)
 	case "rate_limited":
 		return ui.Errorf("Rate limited. %s", apiErr.Message)
+	case "visibility_downgrade_blocked":
+		from, _ := apiErr.Details["from"].(string)
+		to, _ := apiErr.Details["to"].(string)
+		msg := fmt.Sprintf(
+			"This post is currently %s; refusing to change it to %s without confirmation.\n"+
+				"  Likely cause: your local .aland.json has a stale `visibility` from when the\n"+
+				"  project was created. If you really want to lower privacy, edit .aland.json or\n"+
+				"  remove the `visibility` field; otherwise the next push will preserve %s.",
+			displayVisibility(from), displayVisibility(to), displayVisibility(from),
+		)
+		return ui.Errorf("%s", msg)
 	default:
 		return ui.Errorf("%s", apiErr.Error())
+	}
+}
+
+// displayVisibility renders an enum string as something a user would
+// recognize from the web UI labels.
+func displayVisibility(v string) string {
+	switch v {
+	case "public_visibility":
+		return "Public"
+	case "link_only":
+		return "Link-only"
+	case "private_visibility":
+		return "Private"
+	case "":
+		return "(unset)"
+	default:
+		return v
 	}
 }
 
@@ -221,6 +249,11 @@ func formatPushError(err error) error {
 // pointing at sourceFile. Called when `aland push <file>` runs in a dir
 // that doesn't have a project yet — removes the need to `aland init` first
 // when iterating with an agent.
+//
+// Visibility is intentionally left empty here: the server picks its default
+// (public) on create, and leaving the field absent means subsequent updates
+// don't re-send a stale value. If a user later flips the post to private
+// via the web, a follow-up `push` won't silently re-leak it.
 func bootstrapProject(sourceFile string) (*project.Project, error) {
 	cleaned := filepath.Clean(sourceFile)
 	content, err := os.ReadFile(cleaned)
@@ -231,7 +264,6 @@ func bootstrapProject(sourceFile string) (*project.Project, error) {
 	if err := p.Add(deriveArtifactName(cleaned), &project.Artifact{
 		SourceFile: filepath.ToSlash(cleaned),
 		Title:      inferHTMLTitle(content),
-		Visibility: "public_visibility",
 	}); err != nil {
 		return nil, fmt.Errorf("scaffolding project: %w", err)
 	}
