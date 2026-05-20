@@ -52,6 +52,7 @@ safety property, not a limitation.`,
 	cmd.AddCommand(newPullCommand())
 	cmd.AddCommand(newPreviewCommand())
 	cmd.AddCommand(newPushCommand())
+	cmd.AddCommand(newValidateCommand())
 	cmd.AddCommand(newStatusCommand())
 	cmd.AddCommand(newOpenCommand())
 	cmd.AddCommand(newLinkCommand())

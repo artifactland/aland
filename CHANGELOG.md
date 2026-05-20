@@ -2,6 +2,38 @@
 
 Notable user-visible changes. Follows [semver](https://semver.org).
 
+## Unreleased
+
+### Added
+
+- **Bundle support** for multi-file artifacts: drop an `assets/`
+  directory next to your `index.html` (or `index.jsx`) and run
+  `aland push` — the CLI zips the bundle and uploads it so your
+  artifact can reference images via `<img src="assets/hero.png">`.
+  Per-artifact subdomain origins keep bundled assets same-origin to
+  the entry HTML; no CORS or absolute URLs needed.
+  - `aland push <directory>` form scaffolds `.aland.json` around a
+    directory the same way `aland push <file>` scaffolds around a
+    single file.
+  - Pre-flight validation runs automatically — broken `<img src>`
+    references, oversized images (>500 KB), and structural problems
+    surface before the upload. Skip the round-trip when a typo's in
+    the bundle.
+  - Bundles allow `.html` / `.jsx` entry + raster images (PNG, JPG,
+    GIF, WebP, AVIF) for v1. Free tier: 5 MB / 50 files. Pro: 25 MB /
+    200 files.
+- **`aland validate`** — new subcommand that lints a bundle directory
+  offline. Useful for CI workflows or for poking at a broken push
+  without the network round-trip. `aland push` runs it automatically.
+
+### Notes
+
+- Private artifacts can't be bundles in v1 (the entry's signed URL
+  can't extend its signature to relative asset paths, so an unsigned
+  asset URL would otherwise leak via guess). Single-file private
+  artifacts still work normally. Cookie-based asset auth lifts this
+  in a future release.
+
 ## v0.1.2 — 2026-05-05
 
 ### Fixed

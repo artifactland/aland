@@ -197,6 +197,39 @@ func (c *Client) UpdateDraft(ctx context.Context, id, filename string, sourceByt
 	return &env.Data, nil
 }
 
+// CreateBundleDraft uploads a multi-file bundle as a new draft via the
+// JSON+base64 path (`bundle_base64`). Mirrors CreateDraft's contract —
+// always a draft, server ignores client-supplied published_at.
+func (c *Client) CreateBundleDraft(ctx context.Context, zipBytes []byte, attrs map[string]any) (*Post, error) {
+	body := map[string]any{
+		"bundle_base64": base64.StdEncoding.EncodeToString(zipBytes),
+	}
+	if len(attrs) > 0 {
+		body["post"] = attrs
+	}
+	var env Envelope[Post]
+	if err := c.postJSON(ctx, "/api/v1/posts", body, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
+// UpdateBundleDraft PATCHes an existing draft with a new bundle.
+// Whole-bundle replace, not per-file patch.
+func (c *Client) UpdateBundleDraft(ctx context.Context, id string, zipBytes []byte, attrs map[string]any) (*Post, error) {
+	body := map[string]any{
+		"bundle_base64": base64.StdEncoding.EncodeToString(zipBytes),
+	}
+	if len(attrs) > 0 {
+		body["post"] = attrs
+	}
+	var env Envelope[Post]
+	if err := c.doJSON(ctx, http.MethodPatch, "/api/v1/posts/"+id, body, &env); err != nil {
+		return nil, err
+	}
+	return &env.Data, nil
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	return c.doJSON(ctx, http.MethodGet, path, nil, out)
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/artifactland/aland/internal/api"
+	"github.com/artifactland/aland/internal/bundle"
 	"github.com/artifactland/aland/internal/project"
 	"github.com/artifactland/aland/internal/ui"
 	"github.com/spf13/cobra"
@@ -55,14 +56,13 @@ func runPush(cmd *cobra.Command, args []string) error {
 		if !errors.Is(err, project.ErrNotAProject) {
 			return fmt.Errorf("loading project: %w", err)
 		}
-		// No .aland.json yet. If the user handed us a file path, treat
-		// this as first-push and scaffold the project around it — no need
-		// to run `aland init` separately. With no arg, we genuinely don't
-		// know what to upload, so bail with a pointer.
+		// No .aland.json yet. If the user handed us a path (file or
+		// directory), treat this as first-push and scaffold the project
+		// around it. With no arg, we genuinely don't know what to upload.
 		if query == "" {
-			return fmt.Errorf("no .aland.json here — pass a source file path (e.g. `aland push index.html`), or run `aland init` first")
+			return fmt.Errorf("no .aland.json here — pass a source file or bundle directory (e.g. `aland push index.html` or `aland push my-artifact/`), or run `aland init` first")
 		}
-		p, err = bootstrapProject(query)
+		p, err = bootstrapFromPath(query)
 		if err != nil {
 			return err
 		}
@@ -75,12 +75,26 @@ func runPush(cmd *cobra.Command, args []string) error {
 	}
 
 	sourcePath := a.AbsSource(p.Dir())
+
+	// Bundle detection: the artifact's source file is part of a bundle
+	// when an `assets/` directory lives alongside it. The user doesn't
+	// declare bundle-vs-single anywhere — `assets/` is the only
+	// signal, and it's also how the structure rules in
+	// internal/bundle/ define a bundle.
+	bundleDir := filepath.Dir(sourcePath)
+	asBundle := isBundleDir(bundleDir)
+
+	globals := Globals(cmd.Context())
+
+	if asBundle {
+		return pushBundle(cmd, p, a, bundleDir, globals)
+	}
+
 	content, err := os.ReadFile(sourcePath)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", sourcePath, err)
 	}
 
-	globals := Globals(cmd.Context())
 	client, profile, err := authedClient(globals)
 	if err != nil {
 		return err
@@ -210,6 +224,12 @@ func formatPushError(err error) error {
 		return ui.Errorf("%s", apiErr.Message)
 	case "file_too_large":
 		return ui.Errorf("%s", apiErr.Message)
+	case "bundle_too_large", "too_many_files", "bundle_too_large_for_tier", "too_many_files_for_tier":
+		return ui.Errorf("%s", apiErr.Message)
+	case "bundles_not_allowed_for_private_posts":
+		return ui.Errorf("%s", apiErr.Message)
+	case "invalid_bundle_structure", "invalid_zip", "missing_entry_file", "invalid_file_content":
+		return ui.Errorf("Bundle rejected: %s", apiErr.Message)
 	case "rate_limited":
 		return ui.Errorf("Rate limited. %s", apiErr.Message)
 	case "visibility_downgrade_blocked":
@@ -243,6 +263,134 @@ func displayVisibility(v string) string {
 	default:
 		return v
 	}
+}
+
+// pushBundle handles the bundle path (Story 32.8): validate the
+// directory, build a deterministic zip, upload via the bundle-aware
+// API. Same JSON-and-base64 transport the single-file path uses
+// (`bundle_base64` instead of `source`), so no multipart on the wire.
+func pushBundle(cmd *cobra.Command, p *project.Project, a *project.Artifact, bundleDir string, globals *GlobalFlags) error {
+	report, err := bundle.Validate(bundleDir)
+	if err != nil {
+		return fmt.Errorf("validating bundle: %w", err)
+	}
+	printReport(cmd, bundleDir, report)
+	if report.HasErrors() {
+		return ui.Errorf("Bundle has %d blocking issue(s) — fix and re-run.", len(report.Errors()))
+	}
+
+	zipBytes, err := bundle.Build(bundleDir)
+	if err != nil {
+		return fmt.Errorf("building bundle: %w", err)
+	}
+
+	client, profile, err := authedClient(globals)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
+	defer cancel()
+
+	attrs := artifactAttributes(a)
+	var (
+		post    *api.Post
+		created bool
+	)
+
+	if a.PostID == "" {
+		ui.Info("Creating a new bundle draft (%d files, %s) on %s...",
+			report.FileCount, bundle.HumanizeBytes(report.TotalBytes), profile.APIBase)
+		post, err = client.CreateBundleDraft(ctx, zipBytes, attrs)
+		if err != nil {
+			return formatPushError(err)
+		}
+		created = true
+	} else {
+		ui.Info("Updating %s (bundle: %d files, %s) on %s...",
+			a.PostID, report.FileCount, bundle.HumanizeBytes(report.TotalBytes), profile.APIBase)
+		post, err = client.UpdateBundleDraft(ctx, a.PostID, zipBytes, attrs)
+		if err != nil {
+			return formatPushError(err)
+		}
+	}
+
+	if a.PostID != post.ID {
+		a.PostID = post.ID
+		if err := p.Save(); err != nil {
+			return fmt.Errorf("updating .aland.json: %w", err)
+		}
+	}
+
+	isLive := post.PublishedAt != nil && *post.PublishedAt != ""
+
+	if globals.JSON {
+		_ = json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{
+			"post_id":   post.ID,
+			"url":       post.URLs.Web,
+			"title":     post.Title,
+			"bundle":    true,
+			"created":   created,
+			"published": isLive,
+		})
+		return nil
+	}
+
+	switch {
+	case created:
+		ui.Success("Bundle draft created.")
+	case isLive:
+		ui.Success("Published bundle updated.")
+	default:
+		ui.Success("Bundle draft updated.")
+	}
+	fmt.Fprintln(cmd.ErrOrStderr(), "")
+	if isLive {
+		fmt.Fprintln(cmd.ErrOrStderr(), ui.MutedStyle.Render("  Live at:"))
+	} else {
+		fmt.Fprintln(cmd.ErrOrStderr(), ui.MutedStyle.Render("  Review and publish at:"))
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "  "+post.URLs.Web)
+	return nil
+}
+
+// isBundleDir checks for an `assets/` subdirectory next to the entry
+// file. This is the implicit "this is a bundle" signal — no field in
+// .aland.json toggles it. The structure rules in internal/bundle/
+// define a bundle by the same shape, so this stays consistent.
+func isBundleDir(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "assets"))
+	return err == nil && info.IsDir()
+}
+
+// bootstrapFromPath scaffolds a .aland.json from either a file path
+// (existing single-file behavior) or a directory path (new bundle
+// behavior — resolves an entry file inside the dir and points the
+// project at it). Bundle detection is then transparent: at push
+// time, isBundleDir(filepath.Dir(sourcePath)) sees the assets/
+// sibling and routes through pushBundle.
+func bootstrapFromPath(arg string) (*project.Project, error) {
+	cleaned := filepath.Clean(arg)
+	info, err := os.Stat(cleaned)
+	if err == nil && info.IsDir() {
+		return bootstrapProjectFromDir(cleaned)
+	}
+	return bootstrapProject(arg)
+}
+
+func bootstrapProjectFromDir(dir string) (*project.Project, error) {
+	var entry string
+	for _, candidate := range bundle.EntryNames {
+		if _, err := os.Stat(filepath.Join(dir, candidate)); err == nil {
+			entry = candidate
+			break
+		}
+	}
+	if entry == "" {
+		return nil, fmt.Errorf("no index.html or index.jsx in %s — bundles need an entry file at the bundle root", dir)
+	}
+	sourceFile := filepath.ToSlash(filepath.Join(dir, entry))
+	return bootstrapProject(sourceFile)
 }
 
 // bootstrapProject creates a fresh .aland.json in cwd with a single artifact

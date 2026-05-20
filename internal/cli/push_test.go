@@ -343,6 +343,147 @@ func TestPublishJSONMode(t *testing.T) {
 	}
 }
 
+// --- Bundle push (Story 32.8) --------------------------------------------
+
+func TestPushBundleWhenAssetsDirectoryExists(t *testing.T) {
+	var gotPath, gotMethod string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"id": "bundle-1",
+				"slug": "my-bundle",
+				"title": "My Bundle",
+				"file_type": "html",
+				"visibility": "public_visibility",
+				"tags": [],
+				"urls": { "web": "https://artifact.land/drafts/bundle-1" }
+			},
+			"meta": { "request_id": "r" }
+		}`))
+	}))
+	defer srv.Close()
+
+	// Bundle layout: index.html at root, an asset under assets/.
+	dir := setupProject(t, srv.URL, "index.html", `<img src="assets/hero.png">`, nil)
+	writeBundleAsset(t, dir, "assets/hero.png", fakePNGBytes())
+
+	runFrom(t, dir, []string{"push"})
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %s, want POST", gotMethod)
+	}
+	if gotPath != "/api/v1/posts" {
+		t.Errorf("path = %s, want /api/v1/posts", gotPath)
+	}
+	if !strings.Contains(string(gotBody), "bundle_base64") {
+		t.Errorf("bundle path should send bundle_base64; got %s", gotBody)
+	}
+	if strings.Contains(string(gotBody), `"source"`) {
+		t.Errorf("bundle path should NOT send source/filename — that's the single-file branch")
+	}
+
+	// post_id written back
+	p, err := project.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := p.Only()
+	if a.PostID != "bundle-1" {
+		t.Errorf("post_id = %q, want bundle-1", a.PostID)
+	}
+}
+
+func TestPushBundleSubsequentUpdateUsesPatch(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"data": {
+				"id": "bundle-2",
+				"slug": "s",
+				"title": "t",
+				"file_type": "html",
+				"visibility": "public_visibility",
+				"tags": [],
+				"urls": { "web": "https://artifact.land/drafts/bundle-2" }
+			},
+			"meta": { "request_id": "r" }
+		}`))
+	}))
+	defer srv.Close()
+
+	dir := setupProject(t, srv.URL, "index.html", "<html>", &project.Artifact{
+		SourceFile: "index.html",
+		PostID:     "bundle-2",
+	})
+	writeBundleAsset(t, dir, "assets/hero.png", fakePNGBytes())
+
+	runFrom(t, dir, []string{"push"})
+
+	if gotMethod != http.MethodPatch {
+		t.Errorf("subsequent bundle push should PATCH, got %s", gotMethod)
+	}
+	if gotPath != "/api/v1/posts/bundle-2" {
+		t.Errorf("path = %s, want /api/v1/posts/bundle-2", gotPath)
+	}
+}
+
+func TestPushBundleRejectsBrokenReferenceBeforeNetwork(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	// Reference to a file that doesn't exist — validate should catch it.
+	dir := setupProject(t, srv.URL, "index.html", `<img src="assets/missing.png">`, nil)
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runFromExpectingError(t, dir, []string{"push"})
+	if err == nil {
+		t.Fatal("expected push to fail on broken_reference")
+	}
+	if called {
+		t.Errorf("API should not be called when local validate fails")
+	}
+}
+
+func TestValidateCommandRunsOffline(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(`<img src="assets/hero.png">`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeBundleAsset(t, dir, "assets/hero.png", fakePNGBytes())
+
+	withTempConfigDir(t)
+	out := runFrom(t, dir, []string{"validate"})
+	_ = out // styled output is on stderr; we just verify no error.
+}
+
+func writeBundleAsset(t *testing.T, dir, rel string, content []byte) {
+	t.Helper()
+	full := filepath.Join(dir, rel)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func fakePNGBytes() []byte {
+	return append([]byte("\x89PNG\r\n\x1A\n"), make([]byte, 16)...)
+}
+
 // --- helpers --------------------------------------------------------------
 
 // setupProject builds a directory with a .aland.json + source file and
