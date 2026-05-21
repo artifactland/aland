@@ -12,9 +12,10 @@ Read the whole thing before starting work on an artifact. It's short.
 ## What artifact.land is
 
 A place to publish and share **self-contained interactive artifacts** —
-HTML or JSX files that run in a sandboxed iframe. Think: React widgets,
-data visualizations, prototypes, toys, zines. One artifact per URL, one
-URL per page.
+an entry HTML or JSX file (plus optional images bundled alongside it)
+that runs in a sandboxed iframe. Think: React widgets, data
+visualizations, prototypes, toys, zines. One artifact per URL, one URL
+per page.
 
 The platform is a **dumb container**. It doesn't run LLM calls on your
 behalf, doesn't bill for tokens, doesn't own your editor. It serves
@@ -97,38 +98,112 @@ list.
 ## Sandbox constraints
 
 Artifacts run inside `<iframe sandbox="allow-scripts allow-downloads
-allow-popups allow-popups-to-escape-sandbox">` served from a separate
-domain (`artifactlandcdn.com`). The production CSP also sets
+allow-popups allow-popups-to-escape-sandbox allow-same-origin">` served
+from a **per-artifact subdomain** of `artifactlandcdn.com` (each
+artifact gets its own browser origin, isolated from the main app and
+from every other artifact). The production CSP also sets
 `connect-src 'none'` and loads scripts only from a fixed CDN allowlist.
 
 What this means in practice:
 
 - ❌ **`fetch()` to external origins fails.** `connect-src 'none'`. Work
   with what you can inline.
-- ❌ **`localStorage` / `sessionStorage` / `document.cookie` throw
-  SecurityError.** The iframe doesn't have `allow-same-origin`. Use
-  in-memory state only.
-- ❌ **Service workers don't register.** Same reason.
-- ❌ **Loading arbitrary scripts (unpkg etc.) is blocked.** Only the
-  CDNs in the allowlist.
+- ❌ **External `<img src="https://…">` fails.** `img-src 'self' data: blob:`.
+  Bundle the image (see Bundles below) or inline as base64.
+- ❌ **Service workers don't register.** `worker-src 'none'`.
+- ❌ **Loading arbitrary scripts (random unpkg paths, etc.) is blocked**
+  outside the CDN allowlist.
+- ✅ `localStorage`, `sessionStorage`, `IndexedDB`, and cookies all
+  work — each artifact has a unique origin, so storage is scoped to
+  that one artifact. No cloud sync; storage is per-device, per-browser.
 - ✅ `<canvas>`, `<svg>`, `WebGL` all work.
 - ✅ `Web Audio API` works. `tone` is in the runtime list for convenience.
 - ✅ Keyboard, mouse, touch input work as expected.
-- ✅ Writing big inline data into the HTML works — artifacts can ship
-  their own datasets up to the 5MB file-size limit.
+- ✅ Big inline data ships with the entry file — artifacts can carry
+  their own datasets up to the bundle cap (see below).
 
 When you build an artifact, test these assumptions locally with
 `aland preview`. If it works there, it works after publishing.
 
+## Bundles (entry file + assets)
+
+An artifact is one **entry file** (`index.html` or `index.jsx`) plus
+any images it references, packaged together. The two shapes:
+
+- **Single file** — just the entry file, no separate assets. All
+  content inline (base64 images, embedded SVG, CDN scripts).
+- **Bundle** — entry file at the root plus images under `assets/`:
+
+  ```
+  my-artifact/
+  ├── index.html
+  └── assets/
+      ├── hero.jpg
+      ├── thumbnail.png
+      └── icons/
+          └── star.webp
+  ```
+
+Reference bundled assets with normal relative URLs in the entry file —
+they're same-origin with the entry, so no CORS, no signed URLs in your
+markup:
+
+```html
+<img src="assets/hero.jpg">
+<source srcset="assets/photo-2x.webp 2x, assets/photo.webp 1x">
+```
+
+CSS `background: url(assets/...)` and `<a href="assets/file.png">` work
+the same way. Nested subdirectories under `assets/` are fine.
+
+**Allowed bundled file types (v1):** raster images only — `.png`,
+`.jpg` / `.jpeg`, `.gif`, `.webp`, `.avif`. Fonts, audio, data, SVG, and
+video are deferred to follow-up epics; inline them in the entry file for
+now (`@font-face` with base64, inline `<svg>`, inline JSON in a
+`<script type="application/json">`).
+
+`aland push <directory>` zips the directory and uploads it as a bundle.
+`aland push <file>` is the unchanged single-file path. The CLI runs
+`aland validate` automatically as the first step (see below).
+
+## `aland validate <directory>`
+
+Offline bundle linter. No network calls. Checks:
+
+1. **Structure** — entry file at the root, every other file under
+   `assets/`. **Blocking** if violated.
+2. **File types** — every file matches the allowlist. **Blocking** on
+   disallowed extensions.
+3. **Size + count** — reports against both free and Pro caps (the CLI
+   can't know your tier offline). **Warning** if over the free cap,
+   **blocking** if over the Pro cap.
+4. **Reference integrity** — parses the entry file, finds every
+   `src=`, `href=`, `url(...)`, `<source srcset="…">`, and CSS
+   `background: url(…)`. **Blocking** if a relative reference points
+   at a file that doesn't exist in the bundle. **Warning** on external
+   URLs (they'll be blocked at runtime by `connect-src 'none'` and
+   `img-src 'self' data: blob:`).
+5. **Image weight** — **Warning** on any image > 500 KB. Suggests
+   compression (`cwebp -q 80`, ImageOptim, squoosh.app).
+
+`aland push` calls validate as step zero. Blocking issues fail the
+push; warnings print but don't block.
+
 ## File size + shape
 
-- Max source size: **5MB**.
-- Supported extensions: `.html`, `.htm`, `.jsx`.
-- JSX files must have a default export (`export default App`); the auto-
-  mount wrapper renders it. Single-file JSX only — no imports of local
-  files (can't resolve them), just the runtime libraries above.
+- **Bundle caps:** Free tier — **5 MB / 50 files**. Pro tier —
+  **25 MB / 200 files**. Cap applies to the post owner.
+- **Entry file extensions:** `.html`, `.htm`, `.jsx`.
+- JSX files must have a default export (`export default App`); the
+  auto-mount wrapper renders it. Single-file JSX only — no local-file
+  imports (can't resolve them), just the runtime libraries above.
 - HTML files must contain at least one of `<!DOCTYPE>`, `<html>`,
   `<head>`, or `<body>` to pass basic validation.
+- **Private posts are single-file only for v1.** Bundles on private
+  posts are refused with `bundles_not_allowed_for_private_posts` — the
+  Worker serves asset paths unsigned, so a private bundle would leak via
+  guessable asset URLs. Set visibility to public or link-only to use a
+  bundle, or stay single-file for private artifacts.
 
 ## The `.aland.json` project file
 
@@ -178,16 +253,26 @@ metadata on the next run.
 
 The API + CLI share stable error codes so agents can branch on them:
 
-| Code                    | What to do                                                  |
-|-------------------------|-------------------------------------------------------------|
-| `unknown_library`       | Remove the import or bundle as HTML (see above).           |
-| `unsupported_file_type` | Rename to `.html` or `.jsx`.                               |
-| `invalid_html`          | File must include `<!DOCTYPE>`, `<html>`, `<head>`, or `<body>`. |
-| `file_too_large`        | Split the artifact or reduce inline assets. 5MB cap.       |
-| `compilation_failed`    | Server's SWC didn't accept the JSX. Error message has the details. |
-| `rate_limited`          | You hit `push` too fast. Defaults: 5 pushes/min.           |
-| `unauthorized`          | Run `aland login` (or `aland login --force` to re-auth).   |
-| `not_found`             | The post doesn't exist or you can't see it.                |
+| Code                                      | What to do                                                                |
+|-------------------------------------------|---------------------------------------------------------------------------|
+| `unknown_library`                         | Remove the import or bundle as HTML (see above).                          |
+| `unsupported_file_type`                   | Entry must be `.html` or `.jsx`. Bundled files must be raster images.     |
+| `invalid_html`                            | Entry HTML must include `<!DOCTYPE>`, `<html>`, `<head>`, or `<body>`.    |
+| `file_too_large`                          | Single-file path exceeded the per-file cap.                               |
+| `bundle_too_large`                        | Bundle exceeded the size cap. Free 5 MB / Pro 25 MB. Trim or upgrade.     |
+| `bundle_too_large_for_tier`               | Forking a bundle that's larger than the forker's tier cap allows.         |
+| `too_many_files`                          | Bundle has more than the file-count cap. Free 50 / Pro 200.               |
+| `too_many_files_for_tier`                 | Forking a bundle with more files than the forker's tier allows.           |
+| `invalid_bundle_structure`                | Entry must be at the root; every other file must live under `assets/`.    |
+| `invalid_bundle`                          | Zip rejected (path traversal, symlink, or other shape problem).           |
+| `invalid_zip`                             | The uploaded file isn't a valid zip.                                      |
+| `missing_entry_file`                      | No `index.html` or `index.jsx` at the bundle root.                        |
+| `invalid_file_content`                    | A bundled file's magic bytes don't match its extension.                   |
+| `bundles_not_allowed_for_private_posts`   | v1 carve-out. Use a single file for private posts, or switch visibility.  |
+| `compilation_failed`                      | Server's SWC didn't accept the JSX. Error message has the details.        |
+| `rate_limited`                            | You hit `push` too fast. Defaults: 5 pushes/min.                          |
+| `unauthorized`                            | Run `aland login` (or `aland login --force` to re-auth).                  |
+| `not_found`                               | The post doesn't exist or you can't see it.                               |
 
 Every error comes back in `{ error: { code, message, details? } }` shape
 over the API; the CLI surfaces `message` and exits with a non-zero code.
@@ -224,8 +309,13 @@ aland context | head -40   # you get the idea
 - **Fix a bug in your live artifact:** `aland pull @me/slug [dir]`
 - **Quick sanity check:** `aland preview` (HTML only; use the server
   preview URL for JSX)
+- **Lint a bundle before uploading:** `aland validate <directory>` —
+  offline structure / file-type / reference / image-weight checks.
+  `aland push` runs this automatically as the first step.
 - **Save progress to the server:** `aland push` — creates a draft the
   user will review, or patches an existing draft / live artifact in place.
+  Pass a directory to upload a bundle, a single file for the single-file
+  path. The CLI builds the zip when given a directory.
 - **Bind a local file to an existing post:** `aland link <file>
   <@user/slug|url|post-id>` — writes the binding into `.aland.json`
   without fetching. Useful after cloning on a new machine, renaming a
