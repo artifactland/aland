@@ -83,6 +83,13 @@ release:
     name: aland
   prerelease: auto
   name_template: "aland {{ .Version }}"
+  # When a release run partially fails (e.g. the homebrew-tap formula push
+  # 401s because a token expired), the next re-run would otherwise hit
+  # 422 "already_exists" on every asset upload — goreleaser isn't
+  # idempotent by default. This flag tells the asset uploader to
+  # overwrite existing files at the same name instead of failing.
+  # Bypasses one of the more annoying release-pipeline papercuts.
+  replace_existing_artifacts: true
   header: |
     ## aland CLI {{ .Version }}
 

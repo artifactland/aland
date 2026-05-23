@@ -2,7 +2,7 @@
 
 Notable user-visible changes. Follows [semver](https://semver.org).
 
-## Unreleased
+## v0.1.4 — 2026-05-23
 
 ### Added
 
